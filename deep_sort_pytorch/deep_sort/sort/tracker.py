@@ -8,6 +8,34 @@ from .track import Track
 
 
 class Tracker:
+    """
+    This is the multi-target tracker.
+
+    Parameters
+    ----------
+    metric : nn_matching.NearestNeighborDistanceMetric
+        A distance metric for measurement-to-track association.
+    max_age : int
+        Maximum number of missed misses before a track is deleted.
+    n_init : int
+        Number of consecutive detections before the track is confirmed. The
+        track state is set to `Deleted` if a miss occurs within the first
+        `n_init` frames.
+
+    Attributes
+    ----------
+    metric : nn_matching.NearestNeighborDistanceMetric
+        The distance metric used for measurement to track association.
+    max_age : int
+        Maximum number of missed misses before a track is deleted.
+    n_init : int
+        Number of frames that a track remains in initialization phase.
+    kf : kalman_filter.KalmanFilter
+        A Kalman filter to filter target trajectories in image space.
+    tracks : List[Track]
+        The list of active tracks at the current time step.
+
+    """
 
     def __init__(self, metric, max_iou_distance=0.7, max_age=70, n_init=3):
         self.metric = metric
@@ -27,7 +55,12 @@ class Tracker:
         for track in self.tracks:
             track.predict(self.kf)
 
-    def update(self, detections):
+    def increment_ages(self):
+        for track in self.tracks:
+            track.increment_age()
+            track.mark_missed()
+
+    def update(self, detections, classes):
         """Perform measurement update and track management.
 
         Parameters
@@ -43,11 +76,11 @@ class Tracker:
         # Update track set.
         for track_idx, detection_idx in matches:
             self.tracks[track_idx].update(
-                self.kf, detections[detection_idx])
+                self.kf, detections[detection_idx], classes[detection_idx])
         for track_idx in unmatched_tracks:
             self.tracks[track_idx].mark_missed()
         for detection_idx in unmatched_detections:
-            self._initiate_track(detections[detection_idx])
+            self._initiate_track(detections[detection_idx], classes[detection_idx].item())
         self.tracks = [t for t in self.tracks if not t.is_deleted()]
 
         # Update distance metric.
@@ -97,13 +130,14 @@ class Tracker:
             linear_assignment.min_cost_matching(
                 iou_matching.iou_cost, self.max_iou_distance, self.tracks,
                 detections, iou_track_candidates, unmatched_detections)
+
         matches = matches_a + matches_b
         unmatched_tracks = list(set(unmatched_tracks_a + unmatched_tracks_b))
         return matches, unmatched_tracks, unmatched_detections
 
-    def _initiate_track(self, detection):
+    def _initiate_track(self, detection, class_id):
         mean, covariance = self.kf.initiate(detection.to_xyah())
         self.tracks.append(Track(
-            mean, detection.cls_, covariance, self._next_id, self.n_init, self.max_age,
+            mean, covariance, self._next_id, class_id, self.n_init, self.max_age,
             detection.feature))
         self._next_id += 1
